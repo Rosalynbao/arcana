@@ -95,8 +95,8 @@ export async function POST(req: Request) {
         env: {
           ...process.env,
           PYTHONPATH: backendRoot,
-          VERTEX_PROJECT: "ieor-4576-487001",
-          VERTEX_LOCATION: "us-central1",
+          VERTEX_PROJECT: process.env.VERTEX_PROJECT ?? "ieor-4576-487001",
+          VERTEX_LOCATION: process.env.VERTEX_LOCATION ?? "us-central1",
         },
         timeout: 120000,
         maxBuffer: 1024 * 1024 * 5,

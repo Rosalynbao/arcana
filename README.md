@@ -238,6 +238,20 @@ This project combines Next.js routes with local Python runner scripts. A deploym
 - Google Cloud credentials for Vertex AI
 - Write access if using the local JSON memory demo
 
+### Render deployment
+
+The repository includes `render.yaml` for a Render Web Service. It installs Python dependencies into `venv/`, builds the Next.js frontend, and starts the app on Render's `$PORT`.
+
+Required Render setup:
+
+1. Create a Render Blueprint or Web Service from this GitHub repo.
+2. Use branch `master`.
+3. Add a secret file named `google-credentials.json` containing the Google Cloud service account JSON.
+4. Keep `GOOGLE_APPLICATION_CREDENTIALS` set to `/etc/secrets/google-credentials.json`.
+5. Confirm `VERTEX_PROJECT` and `VERTEX_LOCATION` match the Google Cloud project and region.
+
+Render will expose the app at its generated `onrender.com` URL after the first successful deploy.
+
 For a production version, replace local JSON memory with a managed database such as Supabase, Neon, Firestore, or Postgres.
 
 ## Known Limitations
