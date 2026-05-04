@@ -1,0 +1,4 @@
+langchain
+langchain-google-vertexai
+google-cloud-aiplatform
+python-dotenv
