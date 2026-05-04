@@ -6,7 +6,7 @@ The product is designed for people using tarot less as fortune-telling and more 
 
 ## Live URL
 
-Live deployment URL: https://arcana-q9az.onrender.com
+Live deployment URL: https://arcana-349652943970.us-central1.run.app
 
 ## Demo Flow
 
@@ -51,6 +51,7 @@ arcana/
   api_followup_runner.py     # Python entrypoint for Pro follow-ups
   api_memory_runner.py       # Python entrypoint for memory updates
   guardrails.py              # Safety and scope guardrails
+  Dockerfile                 # Google Cloud Run container build
   requirements.txt           # Python dependencies
 ```
 
@@ -238,23 +239,21 @@ This project combines Next.js routes with local Python runner scripts. A deploym
 - Google Cloud credentials for Vertex AI
 - Write access if using the local JSON memory demo
 
-### Render deployment
+### Google Cloud Run deployment
 
-The repository includes `render.yaml` for a Render Web Service. It installs Python dependencies into `venv/`, builds the Next.js frontend, and starts the app on Render's `$PORT`.
+The repository includes a `Dockerfile` for Google Cloud Run. The container installs Python dependencies into `venv/`, builds the Next.js frontend, and starts the app on Cloud Run's `$PORT`.
 
-Required Render setup:
+Deploy from the project root:
 
-1. Create a Render Blueprint or Web Service from this GitHub repo.
-2. Use branch `master`.
-3. Add a secret file named `google-credentials.json` containing the Google Cloud service account JSON.
-4. Keep `GOOGLE_APPLICATION_CREDENTIALS` set to `/etc/secrets/google-credentials.json`.
-5. Confirm `VERTEX_PROJECT` and `VERTEX_LOCATION` match the Google Cloud project and region.
-
-Render exposes the current deployment at:
-
-```text
-https://arcana-q9az.onrender.com
+```bash
+gcloud run deploy arcana \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars "VERTEX_PROJECT=ieor-4576-487001,VERTEX_LOCATION=us-central1"
 ```
+
+Cloud Run uses Google application default credentials from the service account running the service. That service account needs permission to call Vertex AI in the configured project.
 
 For a production version, replace local JSON memory with a managed database such as Supabase, Neon, Firestore, or Postgres.
 
@@ -263,4 +262,4 @@ For a production version, replace local JSON memory with a managed database such
 - Demo account and plan state are stored in browser localStorage.
 - Memory is stored in local JSON files for the class prototype.
 - Payment is simulated with an `unlock demo pro` button.
-- Free Render services can take a short moment to wake after inactivity.
+- Cloud Run stores local JSON memory on ephemeral container storage; use a managed database for production persistence.
