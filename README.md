@@ -6,7 +6,7 @@ The product is designed for people using tarot less as fortune-telling and more 
 
 ## Live URL
 
-Live deployment URL: to be added after deployment.
+Live deployment URL: https://arcana-q9az.onrender.com
 
 ## Demo Flow
 
@@ -250,7 +250,11 @@ Required Render setup:
 4. Keep `GOOGLE_APPLICATION_CREDENTIALS` set to `/etc/secrets/google-credentials.json`.
 5. Confirm `VERTEX_PROJECT` and `VERTEX_LOCATION` match the Google Cloud project and region.
 
-Render will expose the app at its generated `onrender.com` URL after the first successful deploy.
+Render exposes the current deployment at:
+
+```text
+https://arcana-q9az.onrender.com
+```
 
 For a production version, replace local JSON memory with a managed database such as Supabase, Neon, Firestore, or Postgres.
 
@@ -259,4 +263,4 @@ For a production version, replace local JSON memory with a managed database such
 - Demo account and plan state are stored in browser localStorage.
 - Memory is stored in local JSON files for the class prototype.
 - Payment is simulated with an `unlock demo pro` button.
-- The current deployment URL has not been added yet.
+- Free Render services can take a short moment to wake after inactivity.
