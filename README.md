@@ -23,7 +23,7 @@ Live deployment URL: https://arcana-349652943970.us-central1.run.app
 
 - Frontend: Next.js, React, TypeScript, Tailwind CSS, Framer Motion
 - Backend bridge: Next.js API routes using Python runner scripts
-- Agent framework: LangChain with Google Vertex AI chat models
+- Agent framework: LangChain + LangGraph (`StateGraph` with conditional routing) with Google Vertex AI chat models
 - Model provider: Vertex AI Gemini through `langchain-google-vertexai`
 - Local memory: JSON files under `data/memory/` for the class demo
 - Tarot assets: local Rider-Waite-Smith card images in `frontend/public/tarot/`
@@ -33,7 +33,7 @@ Live deployment URL: https://arcana-349652943970.us-central1.run.app
 ```text
 arcana/
   agents/
-    pipeline.py              # Main LangChain agent pipeline
+    pipeline.py              # LangGraph multi-agent pipeline (Triage + 3 interpretation agents)
   memory/
     user_store.py            # User memory persistence and memory context builder
   models/
@@ -131,7 +131,7 @@ Python syntax check:
 Quick deck and guardrail smoke test:
 
 ```bash
-./venv/Scripts/python.exe -c "from tools.tarot_tool import FULL_DECK, draw_cards; from guardrails import get_boundary_response; print(len(FULL_DECK)); print(len(draw_cards(3))); print(get_boundary_response('help me hack a password').blocked); print(get_boundary_response('Should I accept this job?').blocked)"
+./venv/Scripts/python.exe -c "from tools.tarot_tool import FULL_DECK, draw_cards; from guardrails import get_boundary_response; print(len(FULL_DECK)); print(len(draw_cards(3))); print(get_boundary_response('help me hack a password').blocked); print(get_boundary_response('Should I accept this job?').blocked); print(get_boundary_response('My landlord is taking me to court and I do not know how to handle the stress').blocked)"
 ```
 
 Expected output:
@@ -141,28 +141,30 @@ Expected output:
 3
 True
 False
+False
 ```
+
+The last case used to be hard-blocked by keyword matching on "lawsuit"/"legal advice"; it now passes the deterministic guardrail and is instead judged by the Triage Agent in `agents/pipeline.py`, which can tell the question is about emotional coping rather than a request for legal advice.
 
 ## Agent Architecture
 
-The main agent pipeline lives in `agents/pipeline.py`.
+The main agent pipeline lives in `agents/pipeline.py`, implemented as a LangGraph `StateGraph` with conditional edges rather than a linear chain.
 
-Arcana runs a multi-step workflow:
-
-1. Boundary check: unsafe or out-of-scope questions are rejected before cards are drawn.
+1. Guardrail check (hard): a small set of zero-tolerance categories (self-harm, violence, privacy invasion, coercive control) are rejected deterministically, with no LLM in the loop.
 2. Intent classification: the user question is classified as Love, Career, Wealth, or General.
-3. Memory retrieval: Pro readings load prior readings and saved follow-up notes.
-4. Spread planning: the agent chooses a spread and card positions using structured output.
-5. Tool use: the tarot tool draws cards from a full 78-card deck.
-6. Interpretation: the agent writes a compressed, mobile-friendly reading.
-7. Action summary: the agent produces two grounded practices.
-8. Memory write: Pro readings are saved and later updated with dated follow-up notes.
+3. Triage: a single structured-output call decides three things at once — whether the reading should proceed or be gently declined (this now covers death predictions, medical/legal/financial framing, and off-topic questions, which used to be over-blocked by keyword matching alone), whether the reading needs a standard or emotionally sensitive tone, and how strongly the question connects to the user's history (none, light, or deep).
+4. Pre-consultation: a brief clarifying question grounded in intent and memory.
+5. Spread planning: the agent chooses a spread and card positions using structured output.
+6. Tool use: the tarot tool draws cards from a full 78-card deck.
+7. Interpretation: the graph routes to one of three distinct interpretation agents based on the Triage decision — standard, emotionally sensitive, or long-term reflection (which traces recurring patterns across a Pro user's past readings instead of repeating the same advice).
+8. Action summary: the agent produces two grounded practices.
+9. Memory write: Pro readings are saved with which interpretation route was taken, and later updated with dated follow-up notes.
 
 ## Class Concepts Used
 
-### 1. Agent framework and prompt chaining
+### 1. Multi-agent dynamic routing
 
-Arcana uses LangChain prompt chains with Vertex AI chat models in `agents/pipeline.py`. The pipeline decomposes the reading into separate agent responsibilities: intent classification, spread planning, interpretation, summary, and follow-up.
+Arcana routes each reading through a Triage Agent that makes three decisions in a single structured-output call: whether the question should proceed or be declined, whether the reading needs a standard or emotionally sensitive tone, and how strongly it connects to the user's history. Based on that decision, the graph dispatches to one of three distinct interpretation agents — standard, emotionally sensitive, or long-term reflection — each with its own prompt and framing, rather than a single fixed prompt chain. This is implemented as a LangGraph `StateGraph` with conditional edges.
 
 File references:
 
@@ -190,7 +192,7 @@ File references:
 
 ### 4. Memory
 
-Pro users have persistent memory. The backend stores readings in JSON, accepts later follow-up notes, and includes those notes in future memory context.
+Pro users have persistent memory. The backend stores readings in JSON, accepts later follow-up notes, and includes those notes in future memory context. The Triage Agent grades how relevant that history is to the current question — none, a light one-line mention, or a full long-term reflection reading that traces the arc across sessions — instead of leaving it to an LLM's discretion inside a single prompt.
 
 File references:
 
@@ -201,7 +203,7 @@ File references:
 
 ### 5. Guardrails
 
-Arcana prevents unsafe, privacy-invasive, medical, legal, financial, and off-topic questions from triggering a reading. Guardrails run in both the API route and the Python pipeline.
+Arcana keeps a small, deterministic hard-block list for zero-tolerance categories: self-harm, violence, privacy invasion, and coercive control. These run in both the API route and the Python pipeline and never depend on an LLM judgment call. Softer, context-dependent cases — death predictions, medical/legal/financial framing, and off-topic questions — are judged by the Triage Agent instead, since keyword matching over-blocked legitimate emotional questions that merely touched those topics (e.g. a question that mentions a legal dispute but is really about the emotional toll of the decision).
 
 File references:
 
@@ -229,6 +231,7 @@ File reference:
 - Real tarot cards: readings use local card artwork instead of plain text cards.
 - Pro follow-up: paid demo mode allows up to five follow-up questions on a reading.
 - Guardrails: unsafe or inappropriate requests return targeted non-reading responses.
+- Reading tone cues: emotionally sensitive or long-term reflection readings surface a small, unobtrusive label in the UI instead of a mechanical "routed to X agent" message.
 
 ## Deployment Notes
 

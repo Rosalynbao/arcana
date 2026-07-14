@@ -9,6 +9,10 @@ function hasAny(text: string, terms: string[]) {
   return terms.some((term) => text.includes(term));
 }
 
+// Zero-tolerance categories only. Softer, context-dependent calls (death predictions,
+// medical/legal/financial mentions, off-topic questions) are judged by the Triage Agent
+// in the Python pipeline, since keyword matching over-blocks legitimate emotional
+// questions that merely touch those topics. Keep this in sync with guardrails.py.
 function getBoundaryResponse(question: string) {
   const text = question.toLowerCase();
 
@@ -18,15 +22,6 @@ function getBoundaryResponse(question: string) {
       title: "This needs real support, not a reading",
       message:
         "I cannot draw cards for immediate self-harm or crisis questions. Please contact local emergency services or a trusted person now. If you are in the U.S., call or text 988 for immediate support.",
-    };
-  }
-
-  if (hasAny(text, ["when will i die", "when am i going to die", "how long will i live", "my death date", "date of my death", "predict my death", "will i die soon", "am i going to die soon", "lifespan", "life expectancy"])) {
-    return {
-      blocked: true,
-      title: "A death prediction would not be ethical",
-      message:
-        "I cannot draw cards to predict when you or another person will die. If this question is coming from fear, try asking: What would help me feel more grounded and alive right now?",
     };
   }
 
@@ -48,53 +43,12 @@ function getBoundaryResponse(question: string) {
     };
   }
 
-  if (hasAny(text, ["diagnose", "cancer", "pregnant", "pregnancy", "disease", "medical", "lawsuit", "legal advice", "stock", "crypto", "lottery"])) {
-    return {
-      blocked: true,
-      title: "This should not be decided by cards",
-      message:
-        "I cannot replace medical, legal, or financial advice. If you want, reframe the question around your emotions, preparation, or the conversation you need to have with a qualified professional.",
-    };
-  }
-
   if (hasAny(text, ["make him love me", "make her love me", "force them", "curse", "control them", "manipulate"])) {
     return {
       blocked: true,
       title: "Love readings need consent",
       message:
         "I cannot help with controlling another person. You can still ask a powerful question: What pattern am I repeating, and what boundary would help me love without losing myself?",
-    };
-  }
-
-  const tarotSignals = [
-    "love",
-    "relationship",
-    "career",
-    "job",
-    "work",
-    "future",
-    "choice",
-    "decision",
-    "feel",
-    "stuck",
-    "move",
-    "path",
-    "should",
-    "why",
-    "friend",
-    "family",
-    "money",
-    "growth",
-    "healing",
-  ];
-  const offTopicSignals = ["code", "debug", "recipe", "homework", "translate", "weather", "calculate", "math", "summarize"];
-
-  if (!hasAny(text, tarotSignals) && hasAny(text, offTopicSignals)) {
-    return {
-      blocked: true,
-      title: "This is outside a tarot reading",
-      message:
-        "Arcana is built for reflective questions about choices, relationships, emotions, and life patterns. Try turning this into a personal question, such as: What am I avoiding in this decision?",
     };
   }
 

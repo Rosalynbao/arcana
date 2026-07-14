@@ -19,6 +19,7 @@ class MemoryEntry(BaseModel):
     emotion_type: str
     is_resolved: bool = False
     followup_note: Optional[str] = None
+    route: Optional[str] = None
 
 
 def _user_file(user_id: str) -> Path:

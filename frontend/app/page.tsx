@@ -61,6 +61,7 @@ interface ReadingData {
   star_color: string;
   session_id: string;
   memory_enabled: boolean;
+  route?: string;
 }
 
 interface AmbientStar {
@@ -199,6 +200,9 @@ const getAccountUserId = (account: UserAccount | null) =>
 const getMemoryStorageKey = (account: UserAccount | null) =>
   `arcana-memory-stars:${getAccountUserId(account)}`;
 
+// Zero-tolerance categories only, kept in sync with guardrails.py and app/api/read/route.ts.
+// Softer, context-dependent calls (death predictions, medical/legal/financial mentions,
+// off-topic questions) are judged by the Triage Agent in the Python pipeline instead.
 const getBoundaryResponse = (question: string): BoundaryCheck => {
   const text = question.toLowerCase();
   const hasAny = (terms: string[]) => terms.some((term) => text.includes(term));
@@ -209,15 +213,6 @@ const getBoundaryResponse = (question: string): BoundaryCheck => {
       title: "This needs real support, not a reading",
       message:
         "I cannot draw cards for immediate self-harm or crisis questions. Please contact local emergency services or a trusted person now. If you are in the U.S., call or text 988 for immediate support.",
-    };
-  }
-
-  if (hasAny(["when will i die", "when am i going to die", "how long will i live", "my death date", "date of my death", "predict my death", "will i die soon", "am i going to die soon", "lifespan", "life expectancy"])) {
-    return {
-      blocked: true,
-      title: "A death prediction would not be ethical",
-      message:
-        "I cannot draw cards to predict when you or another person will die. If this question is coming from fear, try asking: What would help me feel more grounded and alive right now?",
     };
   }
 
@@ -239,53 +234,12 @@ const getBoundaryResponse = (question: string): BoundaryCheck => {
     };
   }
 
-  if (hasAny(["diagnose", "cancer", "pregnant", "pregnancy", "disease", "medical", "lawsuit", "legal advice", "stock", "crypto", "lottery"])) {
-    return {
-      blocked: true,
-      title: "This should not be decided by cards",
-      message:
-        "I cannot replace medical, legal, or financial advice. If you want, reframe the question around your emotions, preparation, or the conversation you need to have with a qualified professional.",
-    };
-  }
-
   if (hasAny(["make him love me", "make her love me", "force them", "curse", "control them", "manipulate"])) {
     return {
       blocked: true,
       title: "Love readings need consent",
       message:
         "I cannot help with controlling another person. You can still ask a powerful question: What pattern am I repeating, and what boundary would help me love without losing myself?",
-    };
-  }
-
-  const tarotSignals = [
-    "love",
-    "relationship",
-    "career",
-    "job",
-    "work",
-    "future",
-    "choice",
-    "decision",
-    "feel",
-    "stuck",
-    "move",
-    "path",
-    "should",
-    "why",
-    "friend",
-    "family",
-    "money",
-    "growth",
-    "healing",
-  ];
-  const offTopicSignals = ["code", "debug", "recipe", "homework", "translate", "weather", "calculate", "math", "summarize"];
-
-  if (!hasAny(tarotSignals) && hasAny(offTopicSignals)) {
-    return {
-      blocked: true,
-      title: "This is outside a tarot reading",
-      message:
-        "Arcana is built for reflective questions about choices, relationships, emotions, and life patterns. Try turning this into a personal question, such as: What am I avoiding in this decision?",
     };
   }
 
@@ -427,7 +381,12 @@ const INSIGHT_GUIDES = [
   "The smallest useful direction to test next.",
 ];
 
-const compactText = (text: string, maxLength = 190) => {
+const ROUTE_NOTES: Record<string, { label: string; className: string }> = {
+  emotional_interpretation: { label: "reading softly", className: "text-rose-200/70" },
+  long_term_reflection: { label: "a thread continues", className: "text-violet-200/70" },
+};
+
+const compactText = (text: string, maxLength = 340) => {
   const normalized = text
     .replace(/^[-*\d.\s]+/, "")
     .replace(/^Insight\s*\d+\s*:\s*/i, "")
@@ -445,10 +404,10 @@ const compactText = (text: string, maxLength = 190) => {
 const getTldr = (text: string) => {
   const normalized = normalizeReadingMarkers(text);
   const explicit = normalized.match(/(?:Core Signal|TL;DR):\s*(.+?)(?:\n|$)/i);
-  if (explicit?.[1]) return compactText(explicit[1], 150);
+  if (explicit?.[1]) return compactText(explicit[1], 190);
 
   const firstInsight = getInsightCards(text)[0] ?? text;
-  return compactText(firstInsight, 150);
+  return compactText(firstInsight, 190);
 };
 
 const getActionItems = (text: string) => {
@@ -464,7 +423,7 @@ const getActionItems = (text: string) => {
       const titleMatch = item.match(/^\*\*([^*]+)\*\*:?\s*(.*)$/);
       return {
         title: titleMatch?.[1] ?? "Practice",
-        body: compactText(titleMatch?.[2] || item.replace(/\*\*/g, ""), 170),
+        body: compactText(titleMatch?.[2] || item.replace(/\*\*/g, ""), 260),
       };
     });
 };
@@ -2114,6 +2073,13 @@ export default function Home() {
                         Three things the spread is asking you to notice
                       </h3>
                     </div>
+                    {reading.route && ROUTE_NOTES[reading.route] && (
+                      <p
+                        className={`mb-6 text-center text-xs uppercase tracking-[0.3em] ${ROUTE_NOTES[reading.route].className}`}
+                      >
+                        {ROUTE_NOTES[reading.route].label}
+                      </p>
+                    )}
                     <div className="mb-7 rounded-3xl border border-violet-200/20 bg-violet-950/20 px-5 py-5 text-center">
                       <p className="mb-2 text-xs uppercase tracking-[0.3em] text-violet-200/70">
                         Core Signal
@@ -2172,7 +2138,7 @@ export default function Home() {
                         </p>
                       </div>
                     )}
-                    <details className="mt-8 rounded-3xl border border-white/10 bg-black/30 p-6 backdrop-blur-md">
+                    <details className="mt-8 rounded-3xl border border-white/10 bg-black/30 p-6 backdrop-blur-md" open>
                       <summary className="cursor-pointer list-none">
                         <div className="flex items-center justify-between gap-4">
                           <div>
@@ -2180,7 +2146,7 @@ export default function Home() {
                               after the reading
                             </p>
                             <h4 className="mt-2 font-serif text-xl text-gray-100">
-                              Open two grounded practices
+                              Two grounded practices
                             </h4>
                           </div>
                           <Flame className="h-5 w-5 text-gray-400" />

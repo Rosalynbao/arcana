@@ -17,6 +17,7 @@ class PipelineResult(BaseModel):
     cards_drawn: List[str]
     interpretation: str
     summary_advice: str
-    star_color: str = "#b388ff"      
+    star_color: str = "#b388ff"
     session_id: str = ""
     memory_enabled: bool = False
+    route: str = ""
