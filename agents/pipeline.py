@@ -11,6 +11,21 @@ from guardrails import get_boundary_response
 from datetime import datetime, timezone
 
 
+class SemanticGuardrailDecision(BaseModel):
+    blocked: bool = Field(
+        description=(
+            "True ONLY if the question expresses, even without using obvious trigger words, one of: "
+            "(a) intent toward self-harm or suicide, (b) intent to harm/threaten another person, "
+            "(c) intent to spy on, hack, stalk, or invade someone else's privacy, or (d) intent to "
+            "control, manipulate, or coerce another person against their will. "
+            "False for questions that merely mention these topics in a safe, reflective, metaphorical, "
+            "or past-tense way (e.g. dream interpretation, grief, a completed breakup)."
+        )
+    )
+    title: str = Field(default="", description="Short, gentle title, only if blocked.")
+    message: str = Field(default="", description="Gentle redirect message, only if blocked.")
+
+
 class SpreadDecision(BaseModel):
     spread_name: str = Field(description="The name of the chosen Tarot spread.")
     card_positions: list[str] = Field(description="The specific meaning of each position.")
@@ -51,6 +66,15 @@ class TriageDecision(BaseModel):
     history_hint: str = Field(
         default="", description="A few-word theme to softly reference, only if memory_relevance is 'light'."
     )
+    importance: int = Field(
+        ge=1,
+        le=10,
+        description=(
+            "How emotionally significant this reading is likely to be for the user later on, 1-10. "
+            "Score high (7-10) for readings tied to major life decisions, grief, recurring conflict, or "
+            "crisis-adjacent distress. Score low (1-3) for casual, low-stakes, or one-off questions."
+        ),
+    )
 
 
 class PipelineState(TypedDict):
@@ -63,12 +87,16 @@ class PipelineState(TypedDict):
     hard_blocked: bool
     hard_block_title: str
     hard_block_message: str
+    semantic_blocked: bool
+    semantic_block_title: str
+    semantic_block_message: str
     boundary_decision: str
     decline_title: str
     decline_message: str
     tone: str
     memory_relevance: str
     history_hint: str
+    importance: int
     pre_consult_question: str
     spread_name: str
     card_positions: list[str]
@@ -92,14 +120,13 @@ class ArcanaPipeline:
     def _build_graph(self):
         graph = StateGraph(PipelineState)
         graph.add_node("guardrail_hard_check", self._node_guardrail_hard_check)
+        graph.add_node("guardrail_semantic_check", self._node_guardrail_semantic_check)
         graph.add_node("classify_intent", self._node_classify_intent)
         graph.add_node("triage_agent", self._node_triage_agent)
         graph.add_node("pre_consult", self._node_pre_consult)
         graph.add_node("determine_spread", self._node_determine_spread)
         graph.add_node("draw_cards", self._node_draw_cards)
-        graph.add_node("standard_interpretation", self._node_standard_interpretation)
-        graph.add_node("emotional_interpretation", self._node_emotional_interpretation)
-        graph.add_node("long_term_reflection", self._node_long_term_reflection)
+        graph.add_node("interpretation", self._node_interpretation)
         graph.add_node("summarize", self._node_summarize)
 
         graph.set_entry_point("guardrail_hard_check")
@@ -107,6 +134,11 @@ class ArcanaPipeline:
         graph.add_conditional_edges(
             "guardrail_hard_check",
             lambda s: "blocked" if s["hard_blocked"] else "pass",
+            {"blocked": END, "pass": "guardrail_semantic_check"},
+        )
+        graph.add_conditional_edges(
+            "guardrail_semantic_check",
+            lambda s: "blocked" if s["semantic_blocked"] else "pass",
             {"blocked": END, "pass": "classify_intent"},
         )
         graph.add_edge("classify_intent", "triage_agent")
@@ -117,28 +149,20 @@ class ArcanaPipeline:
         )
         graph.add_edge("pre_consult", "determine_spread")
         graph.add_edge("determine_spread", "draw_cards")
-        graph.add_conditional_edges(
-            "draw_cards",
-            self._route_interpretation,
-            {
-                "long_term_reflection": "long_term_reflection",
-                "emotional_interpretation": "emotional_interpretation",
-                "standard_interpretation": "standard_interpretation",
-            },
-        )
-        graph.add_edge("standard_interpretation", "summarize")
-        graph.add_edge("emotional_interpretation", "summarize")
-        graph.add_edge("long_term_reflection", "summarize")
+        graph.add_edge("draw_cards", "interpretation")
+        graph.add_edge("interpretation", "summarize")
         graph.add_edge("summarize", END)
 
         return graph.compile()
 
     def _route_interpretation(self, state: PipelineState) -> str:
+        """Descriptive label for which modifiers shaped this reading (used for logging/eval, not routing)."""
+        parts = []
         if state["remember"] and state["memory_relevance"] == "deep":
-            return "long_term_reflection"
+            parts.append("long_term_reflection")
         if state["tone"] == "emotional_sensitive":
-            return "emotional_interpretation"
-        return "standard_interpretation"
+            parts.append("emotional_interpretation")
+        return "+".join(parts) if parts else "standard_interpretation"
 
     # --- nodes ---
 
@@ -151,6 +175,32 @@ class ArcanaPipeline:
                 "hard_block_message": boundary.message,
             }
         return {"hard_blocked": False}
+
+    def _node_guardrail_semantic_check(self, state: PipelineState) -> dict:
+        """Second, isolated safety layer: catches the same zero-tolerance categories as the keyword
+        hard check when phrased without trigger words. Kept as its own single-purpose LLM call so it
+        can be tested and monitored independently of triage_agent's unrelated product judgments
+        (tone, memory_relevance, off-topic scope)."""
+        prompt = PromptTemplate.from_template(
+            "You are a safety classifier for Arcana, a tarot reflection product. Decide only whether "
+            "this question, even if phrased indirectly or without obvious trigger words, expresses "
+            "intent toward self-harm, harming another person, privacy invasion/stalking/hacking, or "
+            "coercing/controlling another person.\n"
+            "Question: '{query}'"
+        )
+        decision = self.llm.with_structured_output(SemanticGuardrailDecision).invoke(
+            prompt.format(query=state["query"])
+        )
+        if decision.blocked:
+            return {
+                "semantic_blocked": True,
+                "semantic_block_title": decision.title or "This needs a different kind of support",
+                "semantic_block_message": decision.message or (
+                    "I can't take this question as a reading. Please reach out to a trusted person or, "
+                    "if you're in immediate danger, local emergency services."
+                ),
+            }
+        return {"semantic_blocked": False}
 
     def _node_classify_intent(self, state: PipelineState) -> dict:
         prompt = PromptTemplate.from_template(
@@ -167,7 +217,16 @@ class ArcanaPipeline:
             "Classified intent: {intent}\n"
             "User has reading memory enabled: {remember}\n"
             "User's reading history:\n{memory_context}\n\n"
-            "Decide boundary_decision, tone, and memory_relevance for this question."
+            "Decide boundary_decision, tone, importance, and memory_relevance for this question.\n\n"
+            "For memory_relevance, follow this rubric exactly:\n"
+            "- 'none': the current question shares no person/relationship/goal/emotional theme with any "
+            "past reading.\n"
+            "- 'light': the current question shares only a topic category with a past reading (e.g. both "
+            "about career) but is not clearly the same underlying situation continuing.\n"
+            "- 'deep': at least one of the following holds — (a) the current question is a continuation "
+            "of the same specific situation as a past reading (same relationship/decision/conflict), "
+            "(b) the user explicitly references a past reading, or (c) the same theme or emotional "
+            "pattern appears in 2 or more past readings, not just this one."
         )
         decision = self.llm.with_structured_output(TriageDecision).invoke(
             prompt.format(
@@ -184,6 +243,7 @@ class ArcanaPipeline:
             "tone": decision.tone,
             "memory_relevance": decision.memory_relevance if state["remember"] else "none",
             "history_hint": decision.history_hint,
+            "importance": decision.importance,
         }
 
     def _node_pre_consult(self, state: PipelineState) -> dict:
@@ -226,73 +286,70 @@ class ArcanaPipeline:
                 f"Softly reference this recurring theme in exactly one insight, without dwelling on it: "
                 f"{state['history_hint']}."
             )
-        return "Do not reference the user's reading history."
+        return (
+            "Do not reference the user's reading history. Do not speculate about, allude to, or invent "
+            "any past event, prior upheaval, or earlier pattern in this user's life that is not stated "
+            "in their current question - treat this as a self-contained, present-moment reading."
+        )
 
-    def _node_standard_interpretation(self, state: PipelineState) -> dict:
+    def _node_interpretation(self, state: PipelineState) -> dict:
+        is_emotional = state["tone"] == "emotional_sensitive"
+        is_deep_memory = state["remember"] and state["memory_relevance"] == "deep"
+
+        guidance_lines = []
+        if is_emotional:
+            guidance_lines.append(
+                "This user's question carries real emotional weight. Read gently: acknowledge the "
+                "feeling first, slow the pace, avoid anything that could sound like a verdict or a "
+                "diagnosis."
+            )
+        if is_deep_memory:
+            guidance_lines.append(
+                "This reading clearly connects to a recurring pattern in the user's history. Trace the "
+                "arc: name what has shifted, what has stayed the same, and what this new reading adds "
+                "to that ongoing story. This is a growth-oriented reading, not a repeat of the same "
+                "advice."
+            )
+        guidance = "\n".join(guidance_lines)
+
+        history_line = (
+            f"Their reading history:\n{state['memory_context']}" if is_deep_memory else self._history_line(state)
+        )
+
+        core_signal_note = "one sentence, max 28 words"
+        if is_emotional:
+            core_signal_note += ", gentle in tone"
+        if is_deep_memory:
+            core_signal_note += ", naming the through-line across readings"
+
+        if is_deep_memory:
+            focus_note = "growth and self-reflection"
+        elif is_emotional:
+            focus_note = "self-reflection and emotional grounding"
+        else:
+            focus_note = "self-reflection"
+
         prompt = PromptTemplate.from_template(
             "You are Arcana, a Tarot reader trained in Jungian psychology and narrative therapy.\n"
+            "{guidance}\n"
             "User asked: '{query}'\nSpread: {spread_name}\nCards:\n{cards_text}\n\n"
             "{history_line}\n\n"
             "Write for a polished mobile product, not an essay.\n"
             "Format exactly as:\n"
-            "Core Signal: one sentence, max 28 words.\n"
+            "Core Signal: {core_signal_note}.\n"
             "Insight 1: max 45 words.\n"
             "Insight 2: max 45 words.\n"
             "Insight 3: max 45 words.\n"
-            "Focus on self-reflection, not prediction. No greetings, no preamble, no markdown."
+            "Focus on {focus_note}, not prediction. No greetings, no preamble, no markdown."
         )
         interpretation = (prompt | self.llm).invoke({
+            "guidance": guidance,
             "query": state["query"],
             "spread_name": state["spread_name"],
             "cards_text": self._cards_text(state),
-            "history_line": self._history_line(state),
-        }).content.strip()
-        return {"interpretation": interpretation}
-
-    def _node_emotional_interpretation(self, state: PipelineState) -> dict:
-        prompt = PromptTemplate.from_template(
-            "You are Arcana, a Tarot reader trained in Jungian psychology and narrative therapy.\n"
-            "This user's question carries real emotional weight. Read gently: acknowledge the feeling "
-            "first, slow the pace, avoid anything that could sound like a verdict or a diagnosis.\n"
-            "User asked: '{query}'\nSpread: {spread_name}\nCards:\n{cards_text}\n\n"
-            "{history_line}\n\n"
-            "Write for a polished mobile product, not an essay.\n"
-            "Format exactly as:\n"
-            "Core Signal: one sentence, max 28 words, gentle in tone.\n"
-            "Insight 1: max 45 words.\n"
-            "Insight 2: max 45 words.\n"
-            "Insight 3: max 45 words.\n"
-            "Focus on self-reflection and emotional grounding, not prediction. No greetings, no preamble, no markdown."
-        )
-        interpretation = (prompt | self.llm).invoke({
-            "query": state["query"],
-            "spread_name": state["spread_name"],
-            "cards_text": self._cards_text(state),
-            "history_line": self._history_line(state),
-        }).content.strip()
-        return {"interpretation": interpretation}
-
-    def _node_long_term_reflection(self, state: PipelineState) -> dict:
-        prompt = PromptTemplate.from_template(
-            "You are Arcana, a Tarot reader trained in Jungian psychology and narrative therapy.\n"
-            "This reading clearly connects to a recurring pattern in the user's history. Trace the arc: "
-            "name what has shifted, what has stayed the same, and what this new reading adds to that "
-            "ongoing story. This is a growth-oriented reading, not a repeat of the same advice.\n"
-            "User asked: '{query}'\nSpread: {spread_name}\nCards:\n{cards_text}\n\n"
-            "Their reading history:\n{memory_context}\n\n"
-            "Write for a polished mobile product, not an essay.\n"
-            "Format exactly as:\n"
-            "Core Signal: one sentence, max 28 words, naming the through-line across readings.\n"
-            "Insight 1: max 45 words.\n"
-            "Insight 2: max 45 words.\n"
-            "Insight 3: max 45 words.\n"
-            "Focus on growth and self-reflection, not prediction. No greetings, no preamble, no markdown."
-        )
-        interpretation = (prompt | self.llm).invoke({
-            "query": state["query"],
-            "spread_name": state["spread_name"],
-            "cards_text": self._cards_text(state),
-            "memory_context": state["memory_context"],
+            "history_line": history_line,
+            "core_signal_note": core_signal_note,
+            "focus_note": focus_note,
         }).content.strip()
         return {"interpretation": interpretation}
 
@@ -356,12 +413,16 @@ class ArcanaPipeline:
             "hard_blocked": False,
             "hard_block_title": "",
             "hard_block_message": "",
+            "semantic_blocked": False,
+            "semantic_block_title": "",
+            "semantic_block_message": "",
             "boundary_decision": "",
             "decline_title": "",
             "decline_message": "",
             "tone": "standard",
             "memory_relevance": "none",
             "history_hint": "",
+            "importance": 5,
             "pre_consult_question": "",
             "spread_name": "",
             "card_positions": [],
@@ -376,6 +437,8 @@ class ArcanaPipeline:
 
         if result["hard_blocked"]:
             raise ValueError(f"{result['hard_block_title']}: {result['hard_block_message']}")
+        if result["semantic_blocked"]:
+            raise ValueError(f"{result['semantic_block_title']}: {result['semantic_block_message']}")
         if result["boundary_decision"] == "decline_gracefully":
             raise ValueError(f"{result['decline_title']}: {result['decline_message']}")
 
@@ -391,6 +454,7 @@ class ArcanaPipeline:
                 cards=result["cards_drawn"],
                 reading_summary=result["interpretation"][:200],
                 emotion_type=result["intent"].lower(),
+                importance=result["importance"],
                 route=result["route"],
             ))
 
