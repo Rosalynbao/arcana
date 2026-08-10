@@ -4,6 +4,10 @@ Arcana is an agentic tarot reflection product built around a memory sky. Free us
 
 The product is designed for people using tarot less as fortune-telling and more as a reflective ritual for relationships, career uncertainty, and life transitions.
 
+## Product Doc
+
+Product requirements document (中文): [docs/PRD.md](docs/PRD.md)
+
 ## Live URL
 
 Live deployment URL: https://arcana-349652943970.us-central1.run.app
