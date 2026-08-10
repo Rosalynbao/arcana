@@ -37,13 +37,21 @@ Live deployment URL: https://arcana-349652943970.us-central1.run.app
 ```text
 arcana/
   agents/
-    pipeline.py              # LangGraph multi-agent pipeline (Triage + 3 interpretation agents)
+    pipeline.py              # LangGraph pipeline (layered guardrails, Triage, composed interpretation)
   memory/
     user_store.py            # User memory persistence and memory context builder
   models/
     schemas.py               # Pydantic response schemas
   tools/
     tarot_tool.py            # Tarot deck, draw tool, star color mapping
+  eval/
+    eval_relevance.py        # Memory-relevance classification (36 cases, pattern x domain)
+    eval_memory_recall.py    # Memory selection unit test + weight-sensitivity sweep
+    eval_memory_e2e.py       # End-to-end memory recall + relevance replay
+    eval_guardrail.py        # Guardrail red-team (direct / paraphrase / benign)
+    eval_interpretation.py   # Interpretation quality via LLM-as-judge
+  docs/
+    PRD.md                   # Product requirements document (Chinese)
   frontend/
     app/
       page.tsx               # Main product UI
@@ -154,21 +162,22 @@ The last case used to be hard-blocked by keyword matching on "lawsuit"/"legal ad
 
 The main agent pipeline lives in `agents/pipeline.py`, implemented as a LangGraph `StateGraph` with conditional edges rather than a linear chain.
 
-1. Guardrail check (hard): a small set of zero-tolerance categories (self-harm, violence, privacy invasion, coercive control) are rejected deterministically, with no LLM in the loop.
-2. Intent classification: the user question is classified as Love, Career, Wealth, or General.
-3. Triage: a single structured-output call decides three things at once — whether the reading should proceed or be gently declined (this now covers death predictions, medical/legal/financial framing, and off-topic questions, which used to be over-blocked by keyword matching alone), whether the reading needs a standard or emotionally sensitive tone, and how strongly the question connects to the user's history (none, light, or deep).
-4. Pre-consultation: a brief clarifying question grounded in intent and memory.
-5. Spread planning: the agent chooses a spread and card positions using structured output.
-6. Tool use: the tarot tool draws cards from a full 78-card deck.
-7. Interpretation: the graph routes to one of three distinct interpretation agents based on the Triage decision — standard, emotionally sensitive, or long-term reflection (which traces recurring patterns across a Pro user's past readings instead of repeating the same advice).
-8. Action summary: the agent produces two grounded practices.
-9. Memory write: Pro readings are saved with which interpretation route was taken, and later updated with dated follow-up notes.
+1. Guardrail check (hard): a small set of zero-tolerance categories (self-harm, violence, privacy invasion, coercive control) are rejected deterministically by keyword matching, with no LLM in the loop.
+2. Guardrail check (semantic): an isolated LLM node catches the same zero-tolerance categories when phrased without trigger keywords. It is kept as its own single-purpose node — separate from Triage — so the safety logic can be tested and monitored independently.
+3. Intent classification: the user question is classified as Love, Career, Wealth, or General.
+4. Triage: a single structured-output call decides four things at once — whether the reading should proceed or be gently declined (this covers death predictions, medical/legal/financial framing, and off-topic questions, which used to be over-blocked by keyword matching alone), whether the reading needs a standard or emotionally sensitive tone, how strongly the question connects to the user's history (none, light, or deep, judged against an explicit rubric), and an importance score (1–10) used later for memory retention.
+5. Pre-consultation: a brief clarifying question grounded in intent and memory.
+6. Spread planning: the agent chooses a spread and card positions using structured output.
+7. Tool use: the tarot tool draws cards from a full 78-card deck.
+8. Interpretation: a single interpretation node whose prompt is composed from two independent signals — tone (emotionally sensitive or not) and memory relevance (whether to trace the user's long-term history). These were previously three mutually exclusive nodes, which meant an emotionally heavy reading that was also deeply tied to history would silently lose one of the two treatments; they are now composable so both apply at once.
+9. Action summary: the agent produces two grounded practices.
+10. Memory write: Pro readings are saved with the importance score and the modifiers that shaped them, and later updated with dated follow-up notes.
 
 ## Class Concepts Used
 
 ### 1. Multi-agent dynamic routing
 
-Arcana routes each reading through a Triage Agent that makes three decisions in a single structured-output call: whether the question should proceed or be declined, whether the reading needs a standard or emotionally sensitive tone, and how strongly it connects to the user's history. Based on that decision, the graph dispatches to one of three distinct interpretation agents — standard, emotionally sensitive, or long-term reflection — each with its own prompt and framing, rather than a single fixed prompt chain. This is implemented as a LangGraph `StateGraph` with conditional edges.
+Arcana routes each reading through a Triage Agent that makes several decisions in a single structured-output call: whether the question should proceed or be declined, whether the reading needs a standard or emotionally sensitive tone, how strongly it connects to the user's history, and an importance score. Tone and history relevance are treated as two independent modifiers that compose into a single interpretation node, rather than routing to one of several mutually exclusive prompt chains. This is implemented as a LangGraph `StateGraph` with conditional edges (used for the guardrail and decline branches).
 
 File references:
 
@@ -196,7 +205,7 @@ File references:
 
 ### 4. Memory
 
-Pro users have persistent memory. The backend stores readings in JSON, accepts later follow-up notes, and includes those notes in future memory context. The Triage Agent grades how relevant that history is to the current question — none, a light one-line mention, or a full long-term reflection reading that traces the arc across sessions — instead of leaving it to an LLM's discretion inside a single prompt.
+Pro users have persistent memory. The backend stores readings in JSON, accepts later follow-up notes, and includes those notes in future memory context. Each reading is stored with an importance score (1–10). Retrieval keeps the most recent reading for continuity and fills the rest of the window by a salience score of `0.4 * recency_decay + 0.6 * importance`, so a highly important older reading is not dropped just because newer, more trivial readings have accumulated. The Triage Agent then grades how relevant that retrieved history is to the current question against an explicit rubric — none, a light one-line mention, or a full long-term reflection that traces the arc across sessions — instead of leaving it to an LLM's discretion inside a single prompt.
 
 File references:
 
@@ -207,7 +216,7 @@ File references:
 
 ### 5. Guardrails
 
-Arcana keeps a small, deterministic hard-block list for zero-tolerance categories: self-harm, violence, privacy invasion, and coercive control. These run in both the API route and the Python pipeline and never depend on an LLM judgment call. Softer, context-dependent cases — death predictions, medical/legal/financial framing, and off-topic questions — are judged by the Triage Agent instead, since keyword matching over-blocked legitimate emotional questions that merely touched those topics (e.g. a question that mentions a legal dispute but is really about the emotional toll of the decision).
+Arcana uses a layered guardrail. The first layer is a small, deterministic keyword hard-block list for zero-tolerance categories: self-harm, violence, privacy invasion, and coercive control. It never depends on an LLM judgment call, which is deliberate — the most severe categories need a guarantee that cannot be talked around. The second layer is an isolated LLM node that catches the same categories when they are phrased without the trigger keywords; it runs after the keyword layer and is kept separate from Triage so the safety logic stays independently testable. Softer, context-dependent cases — death predictions, medical/legal/financial framing, and off-topic questions — are judged by the Triage Agent instead, since keyword matching over-blocked legitimate emotional questions that merely touched those topics (e.g. a question that mentions a legal dispute but is really about the emotional toll of the decision).
 
 File references:
 
@@ -223,6 +232,16 @@ Before drawing cards, the frontend Focus Check asks the user to confirm the lens
 File reference:
 
 - `frontend/app/page.tsx`
+
+## Evaluation
+
+Because there are no real users yet, quality is checked with an offline eval suite under `eval/`. The sets are self-built and hand-labeled, so they are for method validation and iteration rather than production-grade statistical claims.
+
+- `eval_relevance.py` — memory-relevance classification, 36 cases stratified by judgment pattern and topic domain, reported as a confusion matrix. Surfaced a systematic rubric ambiguity: the "shared entity but not a continuation" pattern is consistently over-classified as a deep connection.
+- `eval_memory_recall.py` — a unit test of the memory selection logic (old recency-only vs new salience-weighted), plus a weight-sensitivity sweep showing the result is robust across a range of recency/importance weights, not tuned to one split.
+- `eval_memory_e2e.py` — five realistic multi-turn narratives replayed through the real save → retrieve → judge path, checking both that the right memory is pulled into context and that its relevance is judged correctly, including the negative case where an unrelated new question should not be pulled into an old pattern.
+- `eval_guardrail.py` — a red-team set (direct keyword hits, paraphrased evasions, and benign keyword-adjacent questions). The keyword layer catches direct hits but misses all paraphrases; the semantic layer closes that gap. The benign false-positive rate is high, but that is measured on deliberately adversarial cases and reflects severity, not real-world frequency.
+- `eval_interpretation.py` — generation quality scored by an LLM judge against an anchored 1–5 rubric, run several times per case to separate reproducible issues from run-to-run variance.
 
 ## Product Features
 
