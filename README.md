@@ -29,7 +29,7 @@ Live deployment URL: https://arcana-349652943970.us-central1.run.app
 - Backend bridge: Next.js API routes using Python runner scripts
 - Agent framework: LangChain + LangGraph (`StateGraph` with conditional routing) with Google Vertex AI chat models
 - Model provider: Vertex AI Gemini through `langchain-google-vertexai`
-- Local memory: JSON files under `data/memory/` for the class demo
+- Local memory: JSON files under `data/memory/` for the demo
 - Tarot assets: local Rider-Waite-Smith card images in `frontend/public/tarot/`
 
 ## Project Structure
@@ -94,7 +94,7 @@ VERTEX_PROJECT=your-project-id
 VERTEX_LOCATION=us-central1
 ```
 
-The Next.js API routes pass these variables to the Python runners. The default values are currently set for the class demo in:
+The Next.js API routes pass these variables to the Python runners. The default values are currently set for the demo in:
 
 - `frontend/app/api/read/route.ts`
 - `frontend/app/api/followup/route.ts`
@@ -173,7 +173,7 @@ The main agent pipeline lives in `agents/pipeline.py`, implemented as a LangGrap
 9. Action summary: the agent produces two grounded practices.
 10. Memory write: Pro readings are saved with the importance score and the modifiers that shaped them, and later updated with dated follow-up notes.
 
-## Class Concepts Used
+## Key Technical Concepts
 
 ### 1. Multi-agent dynamic routing
 
@@ -286,6 +286,6 @@ For a production version, replace local JSON memory with a managed database such
 ## Known Limitations
 
 - Demo account and plan state are stored in browser localStorage.
-- Memory is stored in local JSON files for the class prototype.
+- Memory is stored in local JSON files for the prototype.
 - Payment is simulated with an `unlock demo pro` button.
 - Cloud Run stores local JSON memory on ephemeral container storage; use a managed database for production persistence.
