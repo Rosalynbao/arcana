@@ -54,6 +54,31 @@ class PreConsultQuestion(BaseModel):
     question: str = Field(description="One brief, empathetic clarifying question for the user.")
 
 
+class InterpretationOutput(BaseModel):
+    """Same content contract as the old free-text interpretation call. The node reassembles
+    these fields into the exact 'Core Signal: ...\\nInsight 1: ...' text the frontend regex
+    parser (getInsightCards/getTldr in page.tsx) already expects, so nothing downstream needs
+    to change."""
+
+    core_signal: str = Field(description="One sentence, no markdown, no greetings, no preamble.")
+    insight_1: str = Field(description="Max 45 words, no markdown.")
+    insight_2: str = Field(description="Max 45 words, no markdown.")
+    insight_3: str = Field(description="Max 45 words, no markdown.")
+
+
+class SummaryAction(BaseModel):
+    title: str = Field(description="A short action title, a few words, no markdown.")
+    action: str = Field(description="One specific, concrete action.")
+
+
+class SummaryOutput(BaseModel):
+    """Reassembled into the exact '1. **title:** action' text the frontend regex parser
+    (getActionItems in page.tsx) already expects."""
+
+    action_1: SummaryAction
+    action_2: SummaryAction
+
+
 class SpreadDecision(BaseModel):
     spread_name: str = Field(description="The name of the chosen Tarot spread.")
     card_positions: list[str] = Field(description="The specific meaning of each position.")
@@ -382,37 +407,50 @@ class ArcanaPipeline:
             "{guidance}\n"
             "User asked: '{query}'\nSpread: {spread_name}\nCards:\n{cards_text}\n\n"
             "{history_line}\n\n"
-            "Write for a polished mobile product, not an essay.\n"
-            "Format exactly as:\n"
-            "Core Signal: {core_signal_note}.\n"
-            "Insight 1: max 45 words.\n"
-            "Insight 2: max 45 words.\n"
-            "Insight 3: max 45 words.\n"
-            "Focus on {focus_note}, not prediction. No greetings, no preamble, no markdown."
+            "Write for a polished mobile product, not an essay. No greetings, no preamble, no "
+            "markdown in any field.\n"
+            "core_signal: {core_signal_note}.\n"
+            "insight_1, insight_2, insight_3: each max 45 words.\n"
+            "Focus on {focus_note}, not prediction."
         )
-        interpretation = (prompt | self.llm).invoke({
-            "guidance": guidance,
-            "query": state["query"],
-            "spread_name": state["spread_name"],
-            "cards_text": self._cards_text(state),
-            "history_line": history_line,
-            "core_signal_note": core_signal_note,
-            "focus_note": focus_note,
-        }).content.strip()
+        decision = self.llm.with_structured_output(InterpretationOutput).invoke(
+            prompt.format(
+                guidance=guidance,
+                query=state["query"],
+                spread_name=state["spread_name"],
+                cards_text=self._cards_text(state),
+                history_line=history_line,
+                core_signal_note=core_signal_note,
+                focus_note=focus_note,
+            )
+        )
+        # Reassembled to match the exact text shape the old free-text prompt produced, since
+        # the frontend parses this string with regex (getInsightCards/getTldr in page.tsx).
+        interpretation = (
+            f"Core Signal: {decision.core_signal.strip()}\n"
+            f"Insight 1: {decision.insight_1.strip()}\n"
+            f"Insight 2: {decision.insight_2.strip()}\n"
+            f"Insight 3: {decision.insight_3.strip()}"
+        )
         return {"interpretation": interpretation}
 
     @_timed
     def _node_summarize(self, state: PipelineState) -> dict:
         prompt = PromptTemplate.from_template(
             "Based on this Tarot reading, give exactly 2 concrete actions.\n"
-            "Each action must be under 35 words.\n"
-            "Format exactly as:\n"
-            "1. **Short action title:** one specific action.\n"
-            "2. **Short action title:** one specific action.\n"
-            "No introduction or conclusion.\n"
+            "Each action must be under 35 words total (title + action). No introduction or "
+            "conclusion.\n"
             "Reading: {interpretation}"
         )
-        summary = (prompt | self.llm).invoke({"interpretation": state["interpretation"]}).content.strip()
+        decision = self.llm.with_structured_output(SummaryOutput).invoke(
+            prompt.format(interpretation=state["interpretation"])
+        )
+        # Reassembled to match the exact "1. **title:** action" text the old free-text prompt
+        # produced, since the frontend parses this string with regex (getActionItems in page.tsx).
+        summary = (
+            f"1. **{decision.action_1.title.strip()}:** {decision.action_1.action.strip()}\n"
+            f"2. **{decision.action_2.title.strip()}:** {decision.action_2.action.strip()}"
+        )
         return {"summary_advice": summary, "route": self._route_interpretation(state)}
 
     def follow_up(self, question: str, reading: dict, user_id: str = "anonymous") -> str:
