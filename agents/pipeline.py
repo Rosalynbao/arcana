@@ -1,3 +1,6 @@
+import functools
+import sys
+import time
 import uuid
 from typing import Literal, TypedDict
 from pydantic import BaseModel, Field
@@ -9,6 +12,23 @@ from tools.tarot_tool import draw_cards, get_star_color
 from memory.user_store import save_reading, build_memory_context, MemoryEntry
 from guardrails import get_boundary_response
 from datetime import datetime, timezone
+
+
+def _timed(func):
+    """Diagnostic-only: logs how long each pipeline node takes to stderr (surfaced in
+    Cloud Run logs via the worker's stderr passthrough) so the slow node(s) in the
+    7-call chain can be identified instead of guessed at."""
+
+    @functools.wraps(func)
+    def wrapper(self, state, *args, **kwargs):
+        start = time.monotonic()
+        try:
+            return func(self, state, *args, **kwargs)
+        finally:
+            elapsed = time.monotonic() - start
+            print(f"[timing] {func.__name__}: {elapsed:.2f}s", file=sys.stderr, flush=True)
+
+    return wrapper
 
 
 class SemanticGuardrailDecision(BaseModel):
@@ -176,6 +196,7 @@ class ArcanaPipeline:
 
     # --- nodes ---
 
+    @_timed
     def _node_guardrail_hard_check(self, state: PipelineState) -> dict:
         boundary = get_boundary_response(state["query"])
         if boundary.blocked:
@@ -186,6 +207,7 @@ class ArcanaPipeline:
             }
         return {"hard_blocked": False}
 
+    @_timed
     def _node_guardrail_semantic_check(self, state: PipelineState) -> dict:
         """Second, isolated safety layer: catches the same zero-tolerance categories as the keyword
         hard check when phrased without trigger words. Kept as its own single-purpose LLM call so it
@@ -212,6 +234,7 @@ class ArcanaPipeline:
             }
         return {"semantic_blocked": False}
 
+    @_timed
     def _node_classify_intent(self, state: PipelineState) -> dict:
         prompt = PromptTemplate.from_template(
             "Classify the intent of this query into ONE of: [Love, Career, Wealth, General].\n"
@@ -220,6 +243,7 @@ class ArcanaPipeline:
         intent = (prompt | self.llm_fast).invoke({"query": state["query"]}).content.strip()
         return {"intent": intent}
 
+    @_timed
     def _node_triage_agent(self, state: PipelineState) -> dict:
         prompt = PromptTemplate.from_template(
             "You are the Triage Agent for Arcana, a tarot reflection product grounded in narrative therapy.\n"
@@ -256,6 +280,7 @@ class ArcanaPipeline:
             "importance": decision.importance,
         }
 
+    @_timed
     def _node_pre_consult(self, state: PipelineState) -> dict:
         prompt = PromptTemplate.from_template(
             "You are a Tarot reader using narrative therapy.\n"
@@ -269,6 +294,7 @@ class ArcanaPipeline:
         }).content.strip()
         return {"pre_consult_question": pre_consult}
 
+    @_timed
     def _node_determine_spread(self, state: PipelineState) -> dict:
         prompt = PromptTemplate.from_template(
             "You are a master Tarot reader. Analyze: '{query}'.\n"
@@ -282,6 +308,7 @@ class ArcanaPipeline:
             "num_cards": spread.num_cards,
         }
 
+    @_timed
     def _node_draw_cards(self, state: PipelineState) -> dict:
         return {"cards_drawn": draw_cards(state["num_cards"])}
 
@@ -302,6 +329,7 @@ class ArcanaPipeline:
             "in their current question - treat this as a self-contained, present-moment reading."
         )
 
+    @_timed
     def _node_interpretation(self, state: PipelineState) -> dict:
         is_emotional = state["tone"] == "emotional_sensitive"
         is_deep_memory = state["remember"] and state["memory_relevance"] == "deep"
@@ -363,6 +391,7 @@ class ArcanaPipeline:
         }).content.strip()
         return {"interpretation": interpretation}
 
+    @_timed
     def _node_summarize(self, state: PipelineState) -> dict:
         prompt = PromptTemplate.from_template(
             "Based on this Tarot reading, give exactly 2 concrete actions.\n"
@@ -443,7 +472,9 @@ class ArcanaPipeline:
             "route": "",
         }
 
+        _run_start = time.monotonic()
         result = self.graph.invoke(initial_state)
+        print(f"[timing] TOTAL graph.invoke: {time.monotonic() - _run_start:.2f}s", file=sys.stderr, flush=True)
 
         if result["hard_blocked"]:
             raise ValueError(f"{result['hard_block_title']}: {result['hard_block_message']}")
