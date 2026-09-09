@@ -46,6 +46,14 @@ class SemanticGuardrailDecision(BaseModel):
     message: str = Field(default="", description="Gentle redirect message, only if blocked.")
 
 
+class PreConsultQuestion(BaseModel):
+    """Diagnostic: same content as the old free-text pre_consult call, just wrapped in a
+    single-field schema to test whether structured output is what makes the
+    guardrail/triage/spread nodes faster than the free-text nodes on gemini-2.5-pro."""
+
+    question: str = Field(description="One brief, empathetic clarifying question for the user.")
+
+
 class SpreadDecision(BaseModel):
     spread_name: str = Field(description="The name of the chosen Tarot spread.")
     card_positions: list[str] = Field(description="The specific meaning of each position.")
@@ -289,10 +297,12 @@ class ArcanaPipeline:
             "Ask ONE brief empathetic clarifying question. "
             "If they have past readings, gently acknowledge any recurring themes."
         )
-        pre_consult = (prompt | self.llm).invoke({
-            "query": state["query"], "intent": state["intent"], "memory_context": state["memory_context"]
-        }).content.strip()
-        return {"pre_consult_question": pre_consult}
+        decision = self.llm.with_structured_output(PreConsultQuestion).invoke(
+            prompt.format(
+                query=state["query"], intent=state["intent"], memory_context=state["memory_context"]
+            )
+        )
+        return {"pre_consult_question": decision.question.strip()}
 
     @_timed
     def _node_determine_spread(self, state: PipelineState) -> dict:
