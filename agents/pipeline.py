@@ -115,6 +115,16 @@ class ArcanaPipeline:
             location=region,
             temperature=0.7
         )
+        # classify_intent is a plain 4-way category call (Love/Career/Wealth/General) with
+        # no creative writing or safety judgment involved, so it doesn't need the pro-tier
+        # reasoning model. Flash is both faster and cheaper here; the safety-critical
+        # guardrail nodes and the interpretation node stay on gemini-2.5-pro.
+        self.llm_fast = ChatVertexAI(
+            model="gemini-2.5-flash",
+            project=project_id,
+            location=region,
+            temperature=0.0,
+        )
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -207,7 +217,7 @@ class ArcanaPipeline:
             "Classify the intent of this query into ONE of: [Love, Career, Wealth, General].\n"
             "Query: {query}\nOutput ONLY the category name."
         )
-        intent = (prompt | self.llm).invoke({"query": state["query"]}).content.strip()
+        intent = (prompt | self.llm_fast).invoke({"query": state["query"]}).content.strip()
         return {"intent": intent}
 
     def _node_triage_agent(self, state: PipelineState) -> dict:

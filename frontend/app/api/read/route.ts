@@ -1,9 +1,5 @@
 import { NextResponse } from 'next/server';
-import { execFile } from 'child_process';
-import util from 'util';
-import path from 'path';
-
-const execFilePromise = util.promisify(execFile);
+import { callWorker } from '../../../lib/pythonWorker';
 
 function hasAny(text: string, terms: string[]) {
   return terms.some((term) => text.includes(term));
@@ -69,39 +65,15 @@ export async function POST(req: Request) {
       return NextResponse.json(boundary);
     }
 
-    const backendRoot = path.join(process.cwd(), '..');
-
-    // Works on both Windows and Mac/Linux
-    const isWindows = process.platform === 'win32';
-    const pythonBin = isWindows
-      ? path.join(backendRoot, 'venv', 'Scripts', 'python.exe')
-      : path.join(backendRoot, 'venv', 'bin', 'python3');
-
-    const scriptPath = path.join(backendRoot, 'api_runner.py');
-
     console.log("[Node] Running Python reading pipeline");
 
-    const { stdout, stderr } = await execFilePromise(
-      pythonBin,
-      [scriptPath, trimmedQuestion, String(userId), remember ? "true" : "false"],
-      {
-        env: {
-          ...process.env,
-          PYTHONPATH: backendRoot,
-          VERTEX_PROJECT: process.env.VERTEX_PROJECT ?? "ieor-4576-487001",
-          VERTEX_LOCATION: process.env.VERTEX_LOCATION ?? "us-central1",
-        },
-        timeout: 120000,
-        maxBuffer: 1024 * 1024 * 5,
-      }
-    );
-
-    if (stderr) console.error("[Python stderr]:", stderr);
-
-    const jsonStart = stdout.indexOf('{');
-    if (jsonStart === -1) throw new Error("No JSON in Python output: " + stdout.slice(0, 200));
-
-    const result = JSON.parse(stdout.substring(jsonStart));
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- drop the internal request id, keep only the payload
+    const { id, ...result } = await callWorker({
+      action: "read",
+      question: trimmedQuestion,
+      userId,
+      remember,
+    });
     if (result.error) throw new Error(result.error);
 
     return NextResponse.json(result);

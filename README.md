@@ -26,9 +26,9 @@ Live deployment URL: https://arcana-349652943970.us-central1.run.app
 ## Tech Stack
 
 - Frontend: Next.js, React, TypeScript, Tailwind CSS, Framer Motion
-- Backend bridge: Next.js API routes using Python runner scripts
+- Backend bridge: Next.js API routes talking to a single persistent Python worker process (`worker.py`) over stdin/stdout, so the pipeline and model clients are built once per server instance instead of once per request
 - Agent framework: LangChain + LangGraph (`StateGraph` with conditional routing) with Google Vertex AI chat models
-- Model provider: Vertex AI Gemini through `langchain-google-vertexai`
+- Model provider: Vertex AI Gemini through `langchain-google-vertexai` (`gemini-2.5-pro` for guardrail/triage/interpretation, `gemini-2.5-flash` for plain intent classification)
 - Local memory: JSON files under `data/memory/` for the demo
 - Tarot assets: local Rider-Waite-Smith card images in `frontend/public/tarot/`
 
@@ -58,10 +58,9 @@ arcana/
       api/read/route.ts      # Reading API route
       api/followup/route.ts  # Pro follow-up API route
       api/memory/route.ts    # Memory update API route
+    lib/pythonWorker.ts      # Singleton client that talks to worker.py over stdin/stdout
     public/tarot/            # Local tarot card images
-  api_runner.py              # Python entrypoint for readings
-  api_followup_runner.py     # Python entrypoint for Pro follow-ups
-  api_memory_runner.py       # Python entrypoint for memory updates
+  worker.py                  # Persistent Python worker (reading / follow-up / memory actions)
   guardrails.py              # Safety and scope guardrails
   Dockerfile                 # Google Cloud Run container build
   requirements.txt           # Python dependencies
@@ -137,7 +136,7 @@ npm run build
 Python syntax check:
 
 ```bash
-./venv/Scripts/python.exe -m py_compile agents/pipeline.py api_runner.py api_followup_runner.py api_memory_runner.py guardrails.py memory/user_store.py models/schemas.py tools/tarot_tool.py main.py
+./venv/Scripts/python.exe -m py_compile agents/pipeline.py worker.py guardrails.py memory/user_store.py models/schemas.py tools/tarot_tool.py main.py
 ```
 
 Quick deck and guardrail smoke test:
@@ -182,8 +181,8 @@ Arcana routes each reading through a Triage Agent that makes several decisions i
 File references:
 
 - `agents/pipeline.py`
-- `api_runner.py`
-- `api_followup_runner.py`
+- `worker.py`
+- `frontend/lib/pythonWorker.ts`
 
 ### 2. Structured output
 
@@ -211,7 +210,7 @@ File references:
 
 - `memory/user_store.py`
 - `frontend/app/api/memory/route.ts`
-- `api_memory_runner.py`
+- `worker.py`
 - `agents/pipeline.py`
 
 ### 5. Guardrails
@@ -225,7 +224,17 @@ File references:
 - `frontend/app/api/followup/route.ts`
 - `agents/pipeline.py`
 
-### 6. Human-in-the-loop reframing
+### 6. Persistent worker process
+
+A reading walks through 7 sequential LLM calls (semantic guardrail, intent classification, triage, pre-consult, spread planning, interpretation, summary), each a blocking round trip to Vertex AI, so this path is inherently multi-second. On top of that, the API routes used to spawn a brand-new `python api_runner.py` process per request via `execFile`, which re-imported langchain/langgraph/langchain-google-vertexai and re-built the `ChatVertexAI` client from scratch before any model call even started — pure overhead stacked in front of the 7 calls. `worker.py` is now started once per Node server process and kept alive on stdin/stdout (`frontend/lib/pythonWorker.ts` is the singleton client), so the pipeline and model clients are constructed once and reused. `classify_intent` was also moved to `gemini-2.5-flash` since a 4-way category call doesn't need pro-tier reasoning; the guardrail and interpretation nodes stay on `gemini-2.5-pro`. Both changes ship inside the existing single Cloud Run service — no new infrastructure.
+
+File references:
+
+- `worker.py`
+- `frontend/lib/pythonWorker.ts`
+- `agents/pipeline.py`
+
+### 7. Human-in-the-loop reframing
 
 Before drawing cards, the frontend Focus Check asks the user to confirm the lens of the reading. This keeps the user in control and makes the agent's answer more targeted.
 
